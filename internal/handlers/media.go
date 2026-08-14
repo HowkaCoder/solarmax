@@ -22,16 +22,8 @@ var allowedEntityTypes = map[string]bool{
 	"service":     true,
 }
 
-const maxUploadSize = 25 << 20 // 25 MB на запрос
+const maxUploadSize = 25 << 20 
 
-// UploadMedia принимает multipart/form-data:
-//   entity_type = category | subcategory | product | service
-//   entity_id   = ID сущности
-//   is_main     = true/false (необязательно, для одиночной загрузки)
-//   files       = один или несколько файлов (поле можно повторять)
-//
-// Правило 4: можно сохранить сразу несколько изображений для любой таблицы -
-// достаточно прикрепить несколько файлов в поле "files".
 func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -112,7 +104,6 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if main {
-			// сбрасываем "главное" у остальных изображений этой сущности
 			_, _ = h.Pool.Exec(ctx, `UPDATE media SET is_main=false WHERE entity_type=$1 AND entity_id=$2 AND id<>$3`,
 				entityType, entityID, m.ID)
 		}
@@ -170,7 +161,6 @@ func (h *Handler) DeleteMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// url вида /media/product/5/uuid.jpg -> убираем префикс /media/ и удаляем файл с диска
 	if strings.HasPrefix(relURL, "/media/") {
 		diskPath := filepath.Join(h.Cfg.MediaDir, strings.TrimPrefix(relURL, "/media/"))
 		_ = os.Remove(diskPath)
@@ -179,7 +169,6 @@ func (h *Handler) DeleteMedia(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// SetMainMedia делает изображение "главным" для его сущности, сбрасывая флаг у остальных.
 func (h *Handler) SetMainMedia(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")

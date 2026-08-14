@@ -1,8 +1,6 @@
 FROM golang:1.22-alpine AS builder
 WORKDIR /app
 
-# Копируем всё сразу: go mod tidy должен видеть исходники, чтобы понять
-# какие пакеты реально импортируются, и докачать/проверить go.sum под них.
 COPY . .
 RUN go mod tidy
 RUN CGO_ENABLED=0 go build -o solarmax ./cmd/api

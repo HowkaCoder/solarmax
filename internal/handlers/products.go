@@ -205,8 +205,6 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, p)
 }
 
-// UpdateProductStatus - Правило 3: товар можно скрыть/показать без удаления.
-// PATCH /api/products/{id}/status  {"status":"inactive"}
 func (h *Handler) UpdateProductStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")

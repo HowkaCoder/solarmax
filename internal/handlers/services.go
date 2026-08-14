@@ -174,7 +174,6 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, s)
 }
 
-// UpdateServiceStatus позволяет скрыть/показать услугу без удаления (по аналогии с товаром).
 func (h *Handler) UpdateServiceStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")

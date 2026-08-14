@@ -11,9 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ==================== СЛОВАРЬ ХАРАКТЕРИСТИК ====================
-// Например: "Цвет", "Мощность". Создаётся один раз, дальше переиспользуется
-// на любом количестве товаров.
 
 func (h *Handler) ListCharacteristics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -136,7 +133,6 @@ func (h *Handler) DeleteCharacteristic(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "некорректный id")
 		return
 	}
-	// characteristic_values и product_characteristics удалятся каскадно (ON DELETE CASCADE)
 	tag, err := h.Pool.Exec(ctx, `DELETE FROM characteristics WHERE id=$1`, id)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -149,8 +145,6 @@ func (h *Handler) DeleteCharacteristic(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ==================== ЗНАЧЕНИЯ ХАРАКТЕРИСТИК ====================
-// Например для характеристики "Цвет": "Красный", "Синий".
 
 func (h *Handler) ListCharacteristicValues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -262,8 +256,6 @@ func (h *Handler) DeleteCharacteristicValue(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ==================== ХАРАКТЕРИСТИКИ КОНКРЕТНОГО ТОВАРА ====================
-// Пользователь просто выбирает characteristic_id + value_id из готовых списков выше.
 
 func (h *Handler) loadProductCharacteristics(ctx context.Context, productID int64) ([]models.ProductCharacteristic, error) {
 	rows, err := h.Pool.Query(ctx, `
@@ -303,9 +295,6 @@ func (h *Handler) GetProductCharacteristics(w http.ResponseWriter, r *http.Reque
 	}
 	utils.WriteJSON(w, http.StatusOK, list)
 }
-
-// SetProductCharacteristic добавляет или обновляет значение характеристики у товара
-// (один товар - одно значение на каждую характеристику, повторный вызов перезаписывает).
 func (h *Handler) SetProductCharacteristic(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	productID, err := idParam(r, "id")

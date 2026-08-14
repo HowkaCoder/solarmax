@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewPool открывает пул соединений с Postgres и проверяет его пингом.
 func NewPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(connString)
 	if err != nil {
@@ -26,10 +25,6 @@ func NewPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
 
 	return pool, nil
 }
-
-// RunMigrations выполняет SQL-файл миграции. Все выражения в нём написаны
-// идемпотентно (IF NOT EXISTS / CREATE OR REPLACE), поэтому файл можно
-// безопасно выполнять при каждом старте приложения.
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

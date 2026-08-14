@@ -23,8 +23,6 @@ func NewRouter(pool *pgxpool.Pool, cfg *config.Config) http.Handler {
 		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
 		AllowCredentials: false,
 	}))
-
-	// Статическая раздача загруженных файлов: /media/<entity_type>/<id>/<file>
 	fileServer := http.FileServer(http.Dir(cfg.MediaDir))
 	r.Handle("/media/*", http.StripPrefix("/media/", fileServer))
 

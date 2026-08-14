@@ -194,7 +194,6 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Правило 1: нельзя удалить категорию, если есть подкатегории.
 	var count int
 	if err := h.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM subcategories WHERE category_id=$1`, id).Scan(&count); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())

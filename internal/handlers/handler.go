@@ -19,7 +19,6 @@ type Handler struct {
 	Cfg  *config.Config
 }
 
-// isUniqueViolation проверяет, что ошибка postgres - нарушение уникального ограничения (23505).
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -28,8 +27,6 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
-// isFKViolation проверяет нарушение внешнего ключа (23503) - например,
-// при создании подкатегории со ссылкой на несуществующую категорию.
 func isFKViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -38,7 +35,6 @@ func isFKViolation(err error) bool {
 	return false
 }
 
-// nullable превращает пустую строку в nil, чтобы писать NULL в БД вместо "".
 func nullable(s string) interface{} {
 	if s == "" {
 		return nil
@@ -51,8 +47,6 @@ func idParam(r *http.Request, key string) (int64, error) {
 	return strconv.ParseInt(v, 10, 64)
 }
 
-// getMedia возвращает все изображения сущности, отсортированные так,
-// что "главное" фото (is_main) идёт первым.
 func (h *Handler) getMedia(ctx context.Context, entityType string, entityID int64) ([]models.Media, error) {
 	rows, err := h.Pool.Query(ctx, `
 		SELECT id, entity_type, entity_id, url, is_main, sort_order, created_at
@@ -75,9 +69,6 @@ func (h *Handler) getMedia(ctx context.Context, entityType string, entityID int6
 	return list, rows.Err()
 }
 
-// deleteMediaForEntity удаляет все записи медиа для сущности (используется при удалении сущности).
-// Сами файлы на диске не удаляются намеренно - подчищать их можно отдельной задачей,
-// это исключает риск потерять файл при ошибке в середине транзакции.
 func (h *Handler) deleteMediaForEntity(ctx context.Context, entityType string, entityID int64) error {
 	_, err := h.Pool.Exec(ctx, `DELETE FROM media WHERE entity_type=$1 AND entity_id=$2`, entityType, entityID)
 	return err

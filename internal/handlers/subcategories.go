@@ -212,7 +212,6 @@ func (h *Handler) DeleteSubcategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Правило 2: нельзя удалить подкатегорию, если есть товары.
 	var count int
 	if err := h.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE subcategory_id=$1`, id).Scan(&count); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
