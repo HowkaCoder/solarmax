@@ -1,0 +1,5 @@
+.env
+media/
+!media/.gitkeep
+solarmax
+*.exe
