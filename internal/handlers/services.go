@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"solarmax/internal/models"
 	"solarmax/internal/utils"
@@ -13,7 +14,7 @@ import (
 func scanService(row rowScanner) (models.Service, error) {
 	var s models.Service
 	var desc, content, adv *string
-	err := row.Scan(&s.ID, &s.Name, &desc, &content, &adv, &s.Slug, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+	err := row.Scan(&s.ID, &s.Name, &desc, &content, &adv, &s.Slug, &s.Language, &s.Status, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return s, err
 	}
@@ -32,12 +33,21 @@ func scanService(row rowScanner) (models.Service, error) {
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := r.URL.Query().Get("status")
+	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, name, description, content, advantages, slug, status, created_at, updated_at FROM services`
+	query := `SELECT id, name, description, content, advantages, slug, language, status, created_at, updated_at FROM services`
+	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
-		query += " WHERE status=$1"
 		args = append(args, status)
+		conds = append(conds, "status=$"+strconv.Itoa(len(args)))
+	}
+	if language != "" {
+		args = append(args, language)
+		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + join(conds, " AND ")
 	}
 	query += " ORDER BY id DESC"
 
@@ -70,7 +80,7 @@ func (h *Handler) GetService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := h.Pool.QueryRow(ctx, `
-		SELECT id, name, description, content, advantages, slug, status, created_at, updated_at
+		SELECT id, name, description, content, advantages, slug, language, status, created_at, updated_at
 		FROM services WHERE id=$1`, id)
 	s, err := scanService(row)
 	if err == pgx.ErrNoRows {
@@ -104,17 +114,20 @@ func (h *Handler) CreateService(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
+	if in.Language == "" {
+		in.Language = "ru"
+	}
 
 	row := h.Pool.QueryRow(ctx, `
-		INSERT INTO services (name, description, content, advantages, slug, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, description, content, advantages, slug, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Status)
+		INSERT INTO services (name, description, content, advantages, slug, language, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, name, description, content, advantages, slug, language, status, created_at, updated_at`,
+		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Language, in.Status)
 
 	s, err := scanService(row)
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует")
+			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует для этого языка")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -146,13 +159,16 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
+	if in.Language == "" {
+		in.Language = "ru"
+	}
 
 	row := h.Pool.QueryRow(ctx, `
 		UPDATE services
-		SET name=$1, description=$2, content=$3, advantages=$4, slug=$5, status=$6
-		WHERE id=$7
-		RETURNING id, name, description, content, advantages, slug, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Status, id)
+		SET name=$1, description=$2, content=$3, advantages=$4, slug=$5, language=$6, status=$7
+		WHERE id=$8
+		RETURNING id, name, description, content, advantages, slug, language, status, created_at, updated_at`,
+		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Language, in.Status, id)
 
 	s, err := scanService(row)
 	if err == pgx.ErrNoRows {
@@ -161,7 +177,7 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует")
+			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует для этого языка")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -174,6 +190,7 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, s)
 }
 
+// UpdateServiceStatus позволяет скрыть/показать услугу без удаления (по аналогии с товаром).
 func (h *Handler) UpdateServiceStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")

@@ -15,8 +15,9 @@ func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := r.URL.Query().Get("status")
 	categoryID := r.URL.Query().Get("category_id")
+	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, category_id, name, description, slug, sort_order, status, created_at, updated_at FROM subcategories`
+	query := `SELECT id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at FROM subcategories`
 	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
@@ -26,6 +27,10 @@ func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 	if categoryID != "" {
 		args = append(args, categoryID)
 		conds = append(conds, "category_id=$"+strconv.Itoa(len(args)))
+	}
+	if language != "" {
+		args = append(args, language)
+		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + join(conds, " AND ")
@@ -43,7 +48,7 @@ func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s models.Subcategory
 		var desc *string
-		if err := rows.Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -79,9 +84,9 @@ func (h *Handler) GetSubcategory(w http.ResponseWriter, r *http.Request) {
 	var s models.Subcategory
 	var desc *string
 	err = h.Pool.QueryRow(ctx, `
-		SELECT id, category_id, name, description, slug, sort_order, status, created_at, updated_at
+		SELECT id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at
 		FROM subcategories WHERE id=$1`, id).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "подкатегория не найдена")
 		return
@@ -116,19 +121,22 @@ func (h *Handler) CreateSubcategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
+	if in.Language == "" {
+		in.Language = "ru"
+	}
 
 	var s models.Subcategory
 	var desc *string
 	err := h.Pool.QueryRow(ctx, `
-		INSERT INTO subcategories (category_id, name, description, slug, sort_order, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, category_id, name, description, slug, sort_order, status, created_at, updated_at`,
-		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.SortOrder, in.Status).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+		INSERT INTO subcategories (category_id, name, description, slug, language, sort_order, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at`,
+		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status).
+		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
 
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует")
+			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует для этого языка")
 			return
 		}
 		if isFKViolation(err) {
@@ -168,16 +176,19 @@ func (h *Handler) UpdateSubcategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
+	if in.Language == "" {
+		in.Language = "ru"
+	}
 
 	var s models.Subcategory
 	var desc *string
 	err = h.Pool.QueryRow(ctx, `
 		UPDATE subcategories
-		SET category_id=$1, name=$2, description=$3, slug=$4, sort_order=$5, status=$6
-		WHERE id=$7
-		RETURNING id, category_id, name, description, slug, sort_order, status, created_at, updated_at`,
-		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.SortOrder, in.Status, id).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+		SET category_id=$1, name=$2, description=$3, slug=$4, language=$5, sort_order=$6, status=$7
+		WHERE id=$8
+		RETURNING id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at`,
+		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status, id).
+		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
 
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "подкатегория не найдена")
@@ -185,7 +196,7 @@ func (h *Handler) UpdateSubcategory(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует")
+			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует для этого языка")
 			return
 		}
 		if isFKViolation(err) {
@@ -212,6 +223,7 @@ func (h *Handler) DeleteSubcategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Правило 2: нельзя удалить подкатегорию, если есть товары.
 	var count int
 	if err := h.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM products WHERE subcategory_id=$1`, id).Scan(&count); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())

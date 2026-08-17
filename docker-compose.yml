@@ -30,6 +30,8 @@ services:
       DB_NAME: solarmax
       MEDIA_DIR: /app/media
       PORT: 8080
+      JWT_SECRET: 1q13ek3094ri34
+      JWT_EXPIRY_HOURS: "24"
     ports:
       - "8080:8080"
     volumes:

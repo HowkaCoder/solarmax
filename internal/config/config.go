@@ -3,10 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type Config struct {
-	DatabaseURL string
+	DatabaseURL string // если задан DATABASE_URL целиком (так отдаёт Render Postgres) - используем его как есть
 	DBHost      string
 	DBPort      string
 	DBUser      string
@@ -15,6 +16,10 @@ type Config struct {
 	DBSSLMode   string
 	MediaDir    string
 	Port        string
+
+	// JWT-авторизация
+	JWTSecret      string
+	JWTExpiryHours int
 }
 
 func Load() *Config {
@@ -25,13 +30,25 @@ func Load() *Config {
 		DBUser:      getEnv("DB_USER", "solarmax"),
 		DBPassword:  getEnv("DB_PASSWORD", "solarmax"),
 		DBName:      getEnv("DB_NAME", "solarmax"),
+		// На Render/большинстве облачных Postgres нужен sslmode=require.
+		// Локально в docker-compose оставляем disable.
 		DBSSLMode: getEnv("DB_SSLMODE", "disable"),
 		MediaDir:  getEnv("MEDIA_DIR", "./media"),
+		// Render сам прокидывает переменную PORT и требует слушать именно её -
+		// это уже поддержано, ничего доп. делать не нужно.
 		Port: getEnv("PORT", "8080"),
+
+		// ОБЯЗАТЕЛЬНО задайте свой JWT_SECRET на проде (Render -> Environment).
+		// Значение по умолчанию годится только для локальной разработки.
+		JWTSecret: getEnv("JWT_SECRET", "dev-only-change-me-in-production"),
+		// 24 часа - разумный баланс для простой админки без refresh-токенов:
+		// не слишком долго живущий токен, но и не заставляет логиниться каждый час.
+		JWTExpiryHours: getEnvInt("JWT_EXPIRY_HOURS", 24),
 	}
 }
 
 func (c *Config) ConnString() string {
+	// Если платформа (например Render) сама даёт готовую строку подключения - используем её.
 	if c.DatabaseURL != "" {
 		return c.DatabaseURL
 	}
@@ -42,6 +59,15 @@ func (c *Config) ConnString() string {
 func getEnv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func getEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

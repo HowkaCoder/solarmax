@@ -21,6 +21,7 @@ type Category struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	Slug        string    `json:"slug"`
+	Language    string    `json:"language"`
 	SortOrder   int       `json:"sort_order"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -32,6 +33,7 @@ type CategoryInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Slug        string `json:"slug"`
+	Language    string `json:"language"`
 	SortOrder   int    `json:"sort_order"`
 	Status      string `json:"status"`
 }
@@ -44,6 +46,7 @@ type Subcategory struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
 	Slug        string    `json:"slug"`
+	Language    string    `json:"language"`
 	SortOrder   int       `json:"sort_order"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -56,6 +59,7 @@ type SubcategoryInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Slug        string `json:"slug"`
+	Language    string `json:"language"`
 	SortOrder   int    `json:"sort_order"`
 	Status      string `json:"status"`
 }
@@ -70,6 +74,7 @@ type Product struct {
 	Content         string                   `json:"content,omitempty"`
 	Price           *float64                 `json:"price,omitempty"`
 	Slug            string                   `json:"slug"`
+	Language        string                   `json:"language"`
 	Status          string                   `json:"status"`
 	CreatedAt       time.Time                `json:"created_at"`
 	UpdatedAt       time.Time                `json:"updated_at"`
@@ -84,6 +89,7 @@ type ProductInput struct {
 	Content       string   `json:"content"`
 	Price         *float64 `json:"price"`
 	Slug          string   `json:"slug"`
+	Language      string   `json:"language"`
 	Status        string   `json:"status"`
 }
 
@@ -96,6 +102,7 @@ type Service struct {
 	Content     string    `json:"content,omitempty"`
 	Advantages  string    `json:"advantages,omitempty"`
 	Slug        string    `json:"slug"`
+	Language    string    `json:"language"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -108,6 +115,7 @@ type ServiceInput struct {
 	Content     string `json:"content"`
 	Advantages  string `json:"advantages"`
 	Slug        string `json:"slug"`
+	Language    string `json:"language"`
 	Status      string `json:"status"`
 }
 
@@ -147,6 +155,30 @@ type ProductCharacteristic struct {
 type ProductCharacteristicInput struct {
 	CharacteristicID int64 `json:"characteristic_id"`
 	ValueID          int64 `json:"value_id"`
+}
+
+// ==================== АВТОРИЗАЦИЯ ====================
+
+type Admin struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type LoginInput struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Username  string    `json:"username"`
+}
+
+type ChangePasswordInput struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
 }
 
 // ==================== ОБЩЕЕ ====================

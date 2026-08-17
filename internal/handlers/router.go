@@ -23,6 +23,8 @@ func NewRouter(pool *pgxpool.Pool, cfg *config.Config) http.Handler {
 		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
 		AllowCredentials: false,
 	}))
+
+	// Статическая раздача загруженных файлов: /media/<entity_type>/<id>/<file>
 	fileServer := http.FileServer(http.Dir(cfg.MediaDir))
 	r.Handle("/media/*", http.StripPrefix("/media/", fileServer))
 
@@ -32,61 +34,74 @@ func NewRouter(pool *pgxpool.Pool, cfg *config.Config) http.Handler {
 	})
 
 	r.Route("/api", func(r chi.Router) {
+		// ---- Авторизация ----
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/login", h.Login) // публичный - единственный способ получить токен
+			r.With(h.RequireAuth).Get("/me", h.Me)
+			r.With(h.RequireAuth).Post("/change-password", h.ChangePassword)
+		})
+
+		// ---- Категории ---- (GET открыт всем, остальное - только с токеном)
 		r.Route("/categories", func(r chi.Router) {
 			r.Get("/", h.ListCategories)
-			r.Post("/", h.CreateCategory)
+			r.With(h.RequireAuth).Post("/", h.CreateCategory)
 			r.Get("/{id}", h.GetCategory)
-			r.Put("/{id}", h.UpdateCategory)
-			r.Delete("/{id}", h.DeleteCategory)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateCategory)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteCategory)
 		})
 
+		// ---- Подкатегории ----
 		r.Route("/subcategories", func(r chi.Router) {
 			r.Get("/", h.ListSubcategories)
-			r.Post("/", h.CreateSubcategory)
+			r.With(h.RequireAuth).Post("/", h.CreateSubcategory)
 			r.Get("/{id}", h.GetSubcategory)
-			r.Put("/{id}", h.UpdateSubcategory)
-			r.Delete("/{id}", h.DeleteSubcategory)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateSubcategory)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteSubcategory)
 		})
 
+		// ---- Товары ----
 		r.Route("/products", func(r chi.Router) {
 			r.Get("/", h.ListProducts)
-			r.Post("/", h.CreateProduct)
+			r.With(h.RequireAuth).Post("/", h.CreateProduct)
 			r.Get("/{id}", h.GetProduct)
-			r.Put("/{id}", h.UpdateProduct)
-			r.Patch("/{id}/status", h.UpdateProductStatus)
-			r.Delete("/{id}", h.DeleteProduct)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateProduct)
+			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateProductStatus)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteProduct)
 
 			r.Get("/{id}/characteristics", h.GetProductCharacteristics)
-			r.Post("/{id}/characteristics", h.SetProductCharacteristic)
-			r.Delete("/{id}/characteristics/{characteristicID}", h.DeleteProductCharacteristic)
+			r.With(h.RequireAuth).Post("/{id}/characteristics", h.SetProductCharacteristic)
+			r.With(h.RequireAuth).Delete("/{id}/characteristics/{characteristicID}", h.DeleteProductCharacteristic)
 		})
 
+		// ---- Услуги ----
 		r.Route("/services", func(r chi.Router) {
 			r.Get("/", h.ListServices)
-			r.Post("/", h.CreateService)
+			r.With(h.RequireAuth).Post("/", h.CreateService)
 			r.Get("/{id}", h.GetService)
-			r.Put("/{id}", h.UpdateService)
-			r.Patch("/{id}/status", h.UpdateServiceStatus)
-			r.Delete("/{id}", h.DeleteService)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateService)
+			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateServiceStatus)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteService)
 		})
 
+		// ---- Характеристики ----
 		r.Route("/characteristics", func(r chi.Router) {
 			r.Get("/", h.ListCharacteristics)
-			r.Post("/", h.CreateCharacteristic)
-			r.Put("/{id}", h.UpdateCharacteristic)
-			r.Delete("/{id}", h.DeleteCharacteristic)
+			r.With(h.RequireAuth).Post("/", h.CreateCharacteristic)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateCharacteristic)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteCharacteristic)
 
 			r.Get("/{id}/values", h.ListCharacteristicValues)
-			r.Post("/{id}/values", h.CreateCharacteristicValue)
-			r.Put("/{id}/values/{valueID}", h.UpdateCharacteristicValue)
-			r.Delete("/{id}/values/{valueID}", h.DeleteCharacteristicValue)
+			r.With(h.RequireAuth).Post("/{id}/values", h.CreateCharacteristicValue)
+			r.With(h.RequireAuth).Put("/{id}/values/{valueID}", h.UpdateCharacteristicValue)
+			r.With(h.RequireAuth).Delete("/{id}/values/{valueID}", h.DeleteCharacteristicValue)
 		})
 
+		// ---- Медиа ----
 		r.Route("/media", func(r chi.Router) {
-			r.Post("/upload", h.UploadMedia)
+			r.With(h.RequireAuth).Post("/upload", h.UploadMedia)
 			r.Get("/", h.ListMedia)
-			r.Delete("/{id}", h.DeleteMedia)
-			r.Patch("/{id}/main", h.SetMainMedia)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteMedia)
+			r.With(h.RequireAuth).Patch("/{id}/main", h.SetMainMedia)
 		})
 	})
 
