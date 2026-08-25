@@ -22,7 +22,7 @@ var allowedEntityTypes = map[string]bool{
 	"service":     true,
 }
 
-const maxUploadSize = 25 << 20 
+const maxUploadSize = 25 << 20
 
 func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

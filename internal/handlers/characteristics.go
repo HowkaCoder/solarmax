@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-
 func (h *Handler) ListCharacteristics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := h.Pool.Query(ctx, `SELECT id, name, created_at FROM characteristics ORDER BY name ASC`)
@@ -145,7 +144,6 @@ func (h *Handler) DeleteCharacteristic(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-
 func (h *Handler) ListCharacteristicValues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")
@@ -255,7 +253,6 @@ func (h *Handler) DeleteCharacteristicValue(w http.ResponseWriter, r *http.Reque
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-
 
 func (h *Handler) loadProductCharacteristics(ctx context.Context, productID int64) ([]models.ProductCharacteristic, error) {
 	rows, err := h.Pool.Query(ctx, `

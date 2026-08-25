@@ -11,13 +11,27 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func scanSubcategory(row rowScanner) (models.Subcategory, error) {
+	var s models.Subcategory
+	var translations []byte
+	err := row.Scan(&s.ID, &s.CategoryID, &s.Name, &s.Slug, &s.SortOrder, &s.Status, &translations, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		return s, err
+	}
+	s.Language = map[string]models.SubcategoryTranslation{}
+	if err := utils.FromJSONB(translations, &s.Language); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
 func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := r.URL.Query().Get("status")
 	categoryID := r.URL.Query().Get("category_id")
 	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at FROM subcategories`
+	query := `SELECT id, category_id, name, slug, sort_order, status, translations, created_at, updated_at FROM subcategories`
 	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
@@ -30,7 +44,7 @@ func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 	}
 	if language != "" {
 		args = append(args, language)
-		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
+		conds = append(conds, "translations ? $"+strconv.Itoa(len(args)))
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + join(conds, " AND ")
@@ -46,14 +60,10 @@ func (h *Handler) ListSubcategories(w http.ResponseWriter, r *http.Request) {
 
 	list := []models.Subcategory{}
 	for rows.Next() {
-		var s models.Subcategory
-		var desc *string
-		if err := rows.Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		s, err := scanSubcategory(rows)
+		if err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
-		}
-		if desc != nil {
-			s.Description = *desc
 		}
 		images, _ := h.getMedia(ctx, "subcategory", s.ID)
 		s.Images = images
@@ -81,12 +91,10 @@ func (h *Handler) GetSubcategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var s models.Subcategory
-	var desc *string
-	err = h.Pool.QueryRow(ctx, `
-		SELECT id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at
-		FROM subcategories WHERE id=$1`, id).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+	row := h.Pool.QueryRow(ctx, `
+		SELECT id, category_id, name, slug, sort_order, status, translations, created_at, updated_at
+		FROM subcategories WHERE id=$1`, id)
+	s, err := scanSubcategory(row)
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "подкатегория не найдена")
 		return
@@ -94,9 +102,6 @@ func (h *Handler) GetSubcategory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if desc != nil {
-		s.Description = *desc
 	}
 	images, _ := h.getMedia(ctx, "subcategory", s.ID)
 	s.Images = images
@@ -121,22 +126,26 @@ func (h *Handler) CreateSubcategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.SubcategoryTranslation{}
 	}
 
-	var s models.Subcategory
-	var desc *string
-	err := h.Pool.QueryRow(ctx, `
-		INSERT INTO subcategories (category_id, name, description, slug, language, sort_order, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at`,
-		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
+	}
 
+	row := h.Pool.QueryRow(ctx, `
+		INSERT INTO subcategories (category_id, name, slug, sort_order, status, translations)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+		RETURNING id, category_id, name, slug, sort_order, status, translations, created_at, updated_at`,
+		in.CategoryID, in.Name, in.Slug, in.SortOrder, in.Status, translationsJSON)
+
+	s, err := scanSubcategory(row)
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует")
 			return
 		}
 		if isFKViolation(err) {
@@ -145,9 +154,6 @@ func (h *Handler) CreateSubcategory(w http.ResponseWriter, r *http.Request) {
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if desc != nil {
-		s.Description = *desc
 	}
 
 	utils.WriteJSON(w, http.StatusCreated, s)
@@ -176,27 +182,31 @@ func (h *Handler) UpdateSubcategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.SubcategoryTranslation{}
 	}
 
-	var s models.Subcategory
-	var desc *string
-	err = h.Pool.QueryRow(ctx, `
-		UPDATE subcategories
-		SET category_id=$1, name=$2, description=$3, slug=$4, language=$5, sort_order=$6, status=$7
-		WHERE id=$8
-		RETURNING id, category_id, name, description, slug, language, sort_order, status, created_at, updated_at`,
-		in.CategoryID, in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status, id).
-		Scan(&s.ID, &s.CategoryID, &s.Name, &desc, &s.Slug, &s.Language, &s.SortOrder, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
+	}
 
+	row := h.Pool.QueryRow(ctx, `
+		UPDATE subcategories
+		SET category_id=$1, name=$2, slug=$3, sort_order=$4, status=$5, translations=$6::jsonb
+		WHERE id=$7
+		RETURNING id, category_id, name, slug, sort_order, status, translations, created_at, updated_at`,
+		in.CategoryID, in.Name, in.Slug, in.SortOrder, in.Status, translationsJSON, id)
+
+	s, err := scanSubcategory(row)
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "подкатегория не найдена")
 		return
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "подкатегория с таким slug уже существует")
 			return
 		}
 		if isFKViolation(err) {
@@ -205,9 +215,6 @@ func (h *Handler) UpdateSubcategory(w http.ResponseWriter, r *http.Request) {
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if desc != nil {
-		s.Description = *desc
 	}
 	images, _ := h.getMedia(ctx, "subcategory", s.ID)
 	s.Images = images

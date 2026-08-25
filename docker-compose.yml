@@ -30,7 +30,8 @@ services:
       DB_NAME: solarmax
       MEDIA_DIR: /app/media
       PORT: 8080
-      JWT_SECRET: 1q13ek3094ri34
+      # ОБЯЗАТЕЛЬНО смените на свой длинный случайный секрет в проде!
+      JWT_SECRET: change-me-to-a-long-random-string
       JWT_EXPIRY_HOURS: "24"
     ports:
       - "8080:8080"

@@ -11,13 +11,31 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanProduct(row rowScanner) (models.Product, error) {
+	var p models.Product
+	var translations []byte
+	err := row.Scan(&p.ID, &p.SubcategoryID, &p.Name, &p.Price, &p.Slug, &p.Status, &translations, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return p, err
+	}
+	p.Language = map[string]models.ProductTranslation{}
+	if err := utils.FromJSONB(translations, &p.Language); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
 func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := r.URL.Query().Get("status")
 	subcategoryID := r.URL.Query().Get("subcategory_id")
 	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, subcategory_id, name, description, content, price, slug, language, status, created_at, updated_at FROM products`
+	query := `SELECT id, subcategory_id, name, price, slug, status, translations, created_at, updated_at FROM products`
 	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
@@ -30,7 +48,7 @@ func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	}
 	if language != "" {
 		args = append(args, language)
-		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
+		conds = append(conds, "translations ? $"+strconv.Itoa(len(args)))
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + join(conds, " AND ")
@@ -58,26 +76,6 @@ func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, list)
 }
 
-type rowScanner interface {
-	Scan(dest ...interface{}) error
-}
-
-func scanProduct(row rowScanner) (models.Product, error) {
-	var p models.Product
-	var desc, content *string
-	err := row.Scan(&p.ID, &p.SubcategoryID, &p.Name, &desc, &content, &p.Price, &p.Slug, &p.Language, &p.Status, &p.CreatedAt, &p.UpdatedAt)
-	if err != nil {
-		return p, err
-	}
-	if desc != nil {
-		p.Description = *desc
-	}
-	if content != nil {
-		p.Content = *content
-	}
-	return p, nil
-}
-
 func (h *Handler) GetProduct(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := idParam(r, "id")
@@ -87,7 +85,7 @@ func (h *Handler) GetProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := h.Pool.QueryRow(ctx, `
-		SELECT id, subcategory_id, name, description, content, price, slug, language, status, created_at, updated_at
+		SELECT id, subcategory_id, name, price, slug, status, translations, created_at, updated_at
 		FROM products WHERE id=$1`, id)
 	p, err := scanProduct(row)
 	if err == pgx.ErrNoRows {
@@ -129,20 +127,26 @@ func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.ProductTranslation{}
+	}
+
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
 	}
 
 	row := h.Pool.QueryRow(ctx, `
-		INSERT INTO products (subcategory_id, name, description, content, price, slug, language, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, subcategory_id, name, description, content, price, slug, language, status, created_at, updated_at`,
-		in.SubcategoryID, in.Name, nullable(in.Description), nullable(in.Content), in.Price, in.Slug, in.Language, in.Status)
+		INSERT INTO products (subcategory_id, name, price, slug, status, translations)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+		RETURNING id, subcategory_id, name, price, slug, status, translations, created_at, updated_at`,
+		in.SubcategoryID, in.Name, in.Price, in.Slug, in.Status, translationsJSON)
 
 	p, err := scanProduct(row)
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "товар с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "товар с таким slug уже существует")
 			return
 		}
 		if isFKViolation(err) {
@@ -179,16 +183,22 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.ProductTranslation{}
+	}
+
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
 	}
 
 	row := h.Pool.QueryRow(ctx, `
 		UPDATE products
-		SET subcategory_id=$1, name=$2, description=$3, content=$4, price=$5, slug=$6, language=$7, status=$8
-		WHERE id=$9
-		RETURNING id, subcategory_id, name, description, content, price, slug, language, status, created_at, updated_at`,
-		in.SubcategoryID, in.Name, nullable(in.Description), nullable(in.Content), in.Price, in.Slug, in.Language, in.Status, id)
+		SET subcategory_id=$1, name=$2, price=$3, slug=$4, status=$5, translations=$6::jsonb
+		WHERE id=$7
+		RETURNING id, subcategory_id, name, price, slug, status, translations, created_at, updated_at`,
+		in.SubcategoryID, in.Name, in.Price, in.Slug, in.Status, translationsJSON, id)
 
 	p, err := scanProduct(row)
 	if err == pgx.ErrNoRows {
@@ -197,7 +207,7 @@ func (h *Handler) UpdateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "товар с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "товар с таким slug уже существует")
 			return
 		}
 		if isFKViolation(err) {

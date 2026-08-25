@@ -11,12 +11,28 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// scanCategory читает строку категории, включая jsonb-колонку translations
+// в поле Language (map[код_языка]перевод).
+func scanCategory(row rowScanner) (models.Category, error) {
+	var c models.Category
+	var translations []byte
+	err := row.Scan(&c.ID, &c.Name, &c.Slug, &c.SortOrder, &c.Status, &translations, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return c, err
+	}
+	c.Language = map[string]models.CategoryTranslation{}
+	if err := utils.FromJSONB(translations, &c.Language); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := r.URL.Query().Get("status")
 	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, name, description, slug, language, sort_order, status, created_at, updated_at FROM categories`
+	query := `SELECT id, name, slug, sort_order, status, translations, created_at, updated_at FROM categories`
 	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
@@ -24,8 +40,9 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		conds = append(conds, "status=$"+strconv.Itoa(len(args)))
 	}
 	if language != "" {
+		// translations ? $N - проверка, что в jsonb-объекте есть ключ с этим языком
 		args = append(args, language)
-		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
+		conds = append(conds, "translations ? $"+strconv.Itoa(len(args)))
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + join(conds, " AND ")
@@ -41,14 +58,10 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 
 	list := []models.Category{}
 	for rows.Next() {
-		var c models.Category
-		var desc *string
-		if err := rows.Scan(&c.ID, &c.Name, &desc, &c.Slug, &c.Language, &c.SortOrder, &c.Status, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c, err := scanCategory(rows)
+		if err != nil {
 			utils.WriteError(w, http.StatusInternalServerError, err.Error())
 			return
-		}
-		if desc != nil {
-			c.Description = *desc
 		}
 		images, err := h.getMedia(ctx, "category", c.ID)
 		if err != nil {
@@ -69,12 +82,10 @@ func (h *Handler) GetCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c models.Category
-	var desc *string
-	err = h.Pool.QueryRow(ctx, `
-		SELECT id, name, description, slug, language, sort_order, status, created_at, updated_at
-		FROM categories WHERE id=$1`, id).
-		Scan(&c.ID, &c.Name, &desc, &c.Slug, &c.Language, &c.SortOrder, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	row := h.Pool.QueryRow(ctx, `
+		SELECT id, name, slug, sort_order, status, translations, created_at, updated_at
+		FROM categories WHERE id=$1`, id)
+	c, err := scanCategory(row)
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "категория не найдена")
 		return
@@ -82,9 +93,6 @@ func (h *Handler) GetCategory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if desc != nil {
-		c.Description = *desc
 	}
 
 	images, err := h.getMedia(ctx, "category", c.ID)
@@ -114,26 +122,26 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.CategoryTranslation{}
 	}
 
-	var c models.Category
-	var desc *string
-	err := h.Pool.QueryRow(ctx, `
-		INSERT INTO categories (name, description, slug, language, sort_order, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, description, slug, language, sort_order, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status).
-		Scan(&c.ID, &c.Name, &desc, &c.Slug, &c.Language, &c.SortOrder, &c.Status, &c.CreatedAt, &c.UpdatedAt)
-
-	if desc != nil {
-		c.Description = *desc
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
 	}
 
+	row := h.Pool.QueryRow(ctx, `
+		INSERT INTO categories (name, slug, sort_order, status, translations)
+		VALUES ($1, $2, $3, $4, $5::jsonb)
+		RETURNING id, name, slug, sort_order, status, translations, created_at, updated_at`,
+		in.Name, in.Slug, in.SortOrder, in.Status, translationsJSON)
+
+	c, err := scanCategory(row)
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "категория с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "категория с таким slug уже существует")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -166,34 +174,35 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.CategoryTranslation{}
 	}
 
-	var c models.Category
-	var desc *string
-	err = h.Pool.QueryRow(ctx, `
-		UPDATE categories
-		SET name=$1, description=$2, slug=$3, language=$4, sort_order=$5, status=$6
-		WHERE id=$7
-		RETURNING id, name, description, slug, language, sort_order, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), in.Slug, in.Language, in.SortOrder, in.Status, id).
-		Scan(&c.ID, &c.Name, &desc, &c.Slug, &c.Language, &c.SortOrder, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
+	}
 
+	row := h.Pool.QueryRow(ctx, `
+		UPDATE categories
+		SET name=$1, slug=$2, sort_order=$3, status=$4, translations=$5::jsonb
+		WHERE id=$6
+		RETURNING id, name, slug, sort_order, status, translations, created_at, updated_at`,
+		in.Name, in.Slug, in.SortOrder, in.Status, translationsJSON, id)
+
+	c, err := scanCategory(row)
 	if err == pgx.ErrNoRows {
 		utils.WriteError(w, http.StatusNotFound, "категория не найдена")
 		return
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "категория с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "категория с таким slug уже существует")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	if desc != nil {
-		c.Description = *desc
 	}
 
 	images, _ := h.getMedia(ctx, "category", c.ID)

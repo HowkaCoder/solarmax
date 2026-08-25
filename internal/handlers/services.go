@@ -13,19 +13,14 @@ import (
 
 func scanService(row rowScanner) (models.Service, error) {
 	var s models.Service
-	var desc, content, adv *string
-	err := row.Scan(&s.ID, &s.Name, &desc, &content, &adv, &s.Slug, &s.Language, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+	var translations []byte
+	err := row.Scan(&s.ID, &s.Name, &s.Slug, &s.Status, &translations, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return s, err
 	}
-	if desc != nil {
-		s.Description = *desc
-	}
-	if content != nil {
-		s.Content = *content
-	}
-	if adv != nil {
-		s.Advantages = *adv
+	s.Language = map[string]models.ServiceTranslation{}
+	if err := utils.FromJSONB(translations, &s.Language); err != nil {
+		return s, err
 	}
 	return s, nil
 }
@@ -35,7 +30,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	language := r.URL.Query().Get("language")
 
-	query := `SELECT id, name, description, content, advantages, slug, language, status, created_at, updated_at FROM services`
+	query := `SELECT id, name, slug, status, translations, created_at, updated_at FROM services`
 	conds := []string{}
 	args := []interface{}{}
 	if status != "" {
@@ -44,7 +39,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	}
 	if language != "" {
 		args = append(args, language)
-		conds = append(conds, "language=$"+strconv.Itoa(len(args)))
+		conds = append(conds, "translations ? $"+strconv.Itoa(len(args)))
 	}
 	if len(conds) > 0 {
 		query += " WHERE " + join(conds, " AND ")
@@ -80,7 +75,7 @@ func (h *Handler) GetService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := h.Pool.QueryRow(ctx, `
-		SELECT id, name, description, content, advantages, slug, language, status, created_at, updated_at
+		SELECT id, name, slug, status, translations, created_at, updated_at
 		FROM services WHERE id=$1`, id)
 	s, err := scanService(row)
 	if err == pgx.ErrNoRows {
@@ -114,20 +109,26 @@ func (h *Handler) CreateService(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.ServiceTranslation{}
+	}
+
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
 	}
 
 	row := h.Pool.QueryRow(ctx, `
-		INSERT INTO services (name, description, content, advantages, slug, language, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, name, description, content, advantages, slug, language, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Language, in.Status)
+		INSERT INTO services (name, slug, status, translations)
+		VALUES ($1, $2, $3, $4::jsonb)
+		RETURNING id, name, slug, status, translations, created_at, updated_at`,
+		in.Name, in.Slug, in.Status, translationsJSON)
 
 	s, err := scanService(row)
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
@@ -159,16 +160,22 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	if in.Status == "" {
 		in.Status = "active"
 	}
-	if in.Language == "" {
-		in.Language = "ru"
+	if in.Language == nil {
+		in.Language = map[string]models.ServiceTranslation{}
+	}
+
+	translationsJSON, err := utils.ToJSONB(in.Language)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "не удалось сериализовать переводы")
+		return
 	}
 
 	row := h.Pool.QueryRow(ctx, `
 		UPDATE services
-		SET name=$1, description=$2, content=$3, advantages=$4, slug=$5, language=$6, status=$7
-		WHERE id=$8
-		RETURNING id, name, description, content, advantages, slug, language, status, created_at, updated_at`,
-		in.Name, nullable(in.Description), nullable(in.Content), nullable(in.Advantages), in.Slug, in.Language, in.Status, id)
+		SET name=$1, slug=$2, status=$3, translations=$4::jsonb
+		WHERE id=$5
+		RETURNING id, name, slug, status, translations, created_at, updated_at`,
+		in.Name, in.Slug, in.Status, translationsJSON, id)
 
 	s, err := scanService(row)
 	if err == pgx.ErrNoRows {
@@ -177,7 +184,7 @@ func (h *Handler) UpdateService(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if isUniqueViolation(err) {
-			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует для этого языка")
+			utils.WriteError(w, http.StatusConflict, "услуга с таким slug уже существует")
 			return
 		}
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
