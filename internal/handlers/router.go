@@ -96,6 +96,26 @@ func NewRouter(pool *pgxpool.Pool, cfg *config.Config) http.Handler {
 			r.With(h.RequireAuth).Delete("/{id}/values/{valueID}", h.DeleteCharacteristicValue)
 		})
 
+		// ---- Объекты (типы объектов, "Учебные заведения" и т.д.) ----
+		r.Route("/object-types", func(r chi.Router) {
+			r.Get("/", h.ListObjectTypes)
+			r.With(h.RequireAuth).Post("/", h.CreateObjectType)
+			r.Get("/{id}", h.GetObjectType)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateObjectType)
+			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateObjectTypeStatus)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteObjectType)
+		})
+
+		// ---- Преимущества ("Что мы предлагаем") ----
+		r.Route("/advantages", func(r chi.Router) {
+			r.Get("/", h.ListAdvantages)
+			r.With(h.RequireAuth).Post("/", h.CreateAdvantage)
+			r.Get("/{id}", h.GetAdvantage)
+			r.With(h.RequireAuth).Put("/{id}", h.UpdateAdvantage)
+			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateAdvantageStatus)
+			r.With(h.RequireAuth).Delete("/{id}", h.DeleteAdvantage)
+		})
+
 		// ---- Медиа ----
 		r.Route("/media", func(r chi.Router) {
 			r.With(h.RequireAuth).Post("/upload", h.UploadMedia)

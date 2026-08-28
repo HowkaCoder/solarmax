@@ -134,6 +134,60 @@ type ServiceInput struct {
 	Language map[string]ServiceTranslation `json:"language"`
 }
 
+// ==================== ОБЪЕКТЫ (типы объектов, "Учебные заведения" и т.д.) ====================
+
+type ObjectTypeTranslation struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type ObjectType struct {
+	ID        int64                            `json:"id"`
+	Name      string                           `json:"name"`
+	Slug      string                           `json:"slug"`
+	SortOrder int                              `json:"sort_order"`
+	Status    string                           `json:"status"`
+	Language  map[string]ObjectTypeTranslation `json:"language"`
+	CreatedAt time.Time                        `json:"created_at"`
+	UpdatedAt time.Time                        `json:"updated_at"`
+	Images    []Media                          `json:"images,omitempty"`
+}
+
+type ObjectTypeInput struct {
+	Name      string                           `json:"name"`
+	Slug      string                           `json:"slug"`
+	SortOrder int                              `json:"sort_order"`
+	Status    string                           `json:"status"`
+	Language  map[string]ObjectTypeTranslation `json:"language"`
+}
+
+// ==================== ПРЕИМУЩЕСТВА ("Что мы предлагаем") ====================
+
+type AdvantageTranslation struct {
+	Name string `json:"name"`
+	Text string `json:"text,omitempty"`
+}
+
+type Advantage struct {
+	ID        int64                           `json:"id"`
+	Name      string                          `json:"name"`
+	Slug      string                          `json:"slug"`
+	SortOrder int                             `json:"sort_order"`
+	Status    string                          `json:"status"`
+	Language  map[string]AdvantageTranslation `json:"language"`
+	CreatedAt time.Time                       `json:"created_at"`
+	UpdatedAt time.Time                       `json:"updated_at"`
+	Images    []Media                         `json:"images,omitempty"`
+}
+
+type AdvantageInput struct {
+	Name      string                          `json:"name"`
+	Slug      string                          `json:"slug"`
+	SortOrder int                             `json:"sort_order"`
+	Status    string                          `json:"status"`
+	Language  map[string]AdvantageTranslation `json:"language"`
+}
+
 // ==================== ХАРАКТЕРИСТИКИ ====================
 
 type Characteristic struct {

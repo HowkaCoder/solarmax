@@ -20,6 +20,8 @@ var allowedEntityTypes = map[string]bool{
 	"subcategory": true,
 	"product":     true,
 	"service":     true,
+	"object_type": true,
+	"advantage":   true,
 }
 
 const maxUploadSize = 25 << 20
@@ -37,7 +39,7 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 	isMain := r.FormValue("is_main") == "true"
 
 	if !allowedEntityTypes[entityType] {
-		utils.WriteError(w, http.StatusBadRequest, "entity_type должен быть одним из: category, subcategory, product, service")
+		utils.WriteError(w, http.StatusBadRequest, "entity_type должен быть одним из: category, subcategory, product, service, object_type, advantage")
 		return
 	}
 	entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
