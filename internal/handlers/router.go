@@ -4,126 +4,113 @@ import (
 	"net/http"
 
 	"solarmax/internal/config"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"solarmax/internal/keepalive"
+	"solarmax/internal/store"
+	"solarmax/internal/utils"
 )
 
-func NewRouter(pool *pgxpool.Pool, cfg *config.Config) http.Handler {
-	h := &Handler{Pool: pool, Cfg: cfg}
+// NewRouter собирает все маршруты на стандартном http.ServeMux (Go 1.22+),
+// поэтому сторонний роутер (chi) больше не нужен. Пути и коды ответов
+// полностью совпадают с прежней версией API.
+func NewRouter(st *store.Store, cfg *config.Config, ka *keepalive.Pinger) http.Handler {
+	h := &Handler{Store: st, Cfg: cfg, KeepAlive: ka}
+	mux := http.NewServeMux()
 
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization"},
-		AllowCredentials: false,
-	}))
+	// ---- Служебное ----
+	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /api/health", h.HealthDetails)
+	mux.HandleFunc("GET /api/keepalive", h.KeepAliveStatus)
+	mux.HandleFunc("POST /api/keepalive/ping", h.RequireAuth(h.KeepAlivePing))
 
-	// Статическая раздача загруженных файлов: /media/<entity_type>/<id>/<file>
+	// ---- Резервная копия данных ----
+	mux.HandleFunc("GET /api/admin/backup", h.RequireAuth(h.Backup))
+	mux.HandleFunc("POST /api/admin/restore", h.RequireAuth(h.Restore))
+
+	// ---- Статика: /media/<entity_type>/<id>/<file> ----
 	fileServer := http.FileServer(http.Dir(cfg.MediaDir))
-	r.Handle("/media/*", http.StripPrefix("/media/", fileServer))
+	mux.Handle("GET /media/", http.StripPrefix("/media/", fileServer))
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+	// ---- Авторизация ----
+	mux.HandleFunc("POST /api/auth/login", h.Login)
+	mux.HandleFunc("GET /api/auth/me", h.RequireAuth(h.Me))
+	mux.HandleFunc("POST /api/auth/change-password", h.RequireAuth(h.ChangePassword))
+
+	// ---- Категории ---- (GET открыт всем, изменения - только с токеном)
+	collection(mux, "GET", "/api/categories", h.ListCategories)
+	collection(mux, "POST", "/api/categories", h.RequireAuth(h.CreateCategory))
+	mux.HandleFunc("GET /api/categories/{id}", h.GetCategory)
+	mux.HandleFunc("PUT /api/categories/{id}", h.RequireAuth(h.UpdateCategory))
+	mux.HandleFunc("DELETE /api/categories/{id}", h.RequireAuth(h.DeleteCategory))
+
+	// ---- Подкатегории ----
+	collection(mux, "GET", "/api/subcategories", h.ListSubcategories)
+	collection(mux, "POST", "/api/subcategories", h.RequireAuth(h.CreateSubcategory))
+	mux.HandleFunc("GET /api/subcategories/{id}", h.GetSubcategory)
+	mux.HandleFunc("PUT /api/subcategories/{id}", h.RequireAuth(h.UpdateSubcategory))
+	mux.HandleFunc("DELETE /api/subcategories/{id}", h.RequireAuth(h.DeleteSubcategory))
+
+	// ---- Товары ----
+	collection(mux, "GET", "/api/products", h.ListProducts)
+	collection(mux, "POST", "/api/products", h.RequireAuth(h.CreateProduct))
+	mux.HandleFunc("GET /api/products/{id}", h.GetProduct)
+	mux.HandleFunc("PUT /api/products/{id}", h.RequireAuth(h.UpdateProduct))
+	mux.HandleFunc("PATCH /api/products/{id}/status", h.RequireAuth(h.UpdateProductStatus))
+	mux.HandleFunc("DELETE /api/products/{id}", h.RequireAuth(h.DeleteProduct))
+	mux.HandleFunc("GET /api/products/{id}/characteristics", h.GetProductCharacteristics)
+	mux.HandleFunc("POST /api/products/{id}/characteristics", h.RequireAuth(h.SetProductCharacteristic))
+	mux.HandleFunc("DELETE /api/products/{id}/characteristics/{characteristicID}", h.RequireAuth(h.DeleteProductCharacteristic))
+
+	// ---- Услуги ----
+	collection(mux, "GET", "/api/services", h.ListServices)
+	collection(mux, "POST", "/api/services", h.RequireAuth(h.CreateService))
+	mux.HandleFunc("GET /api/services/{id}", h.GetService)
+	mux.HandleFunc("PUT /api/services/{id}", h.RequireAuth(h.UpdateService))
+	mux.HandleFunc("PATCH /api/services/{id}/status", h.RequireAuth(h.UpdateServiceStatus))
+	mux.HandleFunc("DELETE /api/services/{id}", h.RequireAuth(h.DeleteService))
+
+	// ---- Характеристики ----
+	collection(mux, "GET", "/api/characteristics", h.ListCharacteristics)
+	collection(mux, "POST", "/api/characteristics", h.RequireAuth(h.CreateCharacteristic))
+	mux.HandleFunc("PUT /api/characteristics/{id}", h.RequireAuth(h.UpdateCharacteristic))
+	mux.HandleFunc("DELETE /api/characteristics/{id}", h.RequireAuth(h.DeleteCharacteristic))
+	mux.HandleFunc("GET /api/characteristics/{id}/values", h.ListCharacteristicValues)
+	mux.HandleFunc("POST /api/characteristics/{id}/values", h.RequireAuth(h.CreateCharacteristicValue))
+	mux.HandleFunc("PUT /api/characteristics/{id}/values/{valueID}", h.RequireAuth(h.UpdateCharacteristicValue))
+	mux.HandleFunc("DELETE /api/characteristics/{id}/values/{valueID}", h.RequireAuth(h.DeleteCharacteristicValue))
+
+	// ---- Объекты ----
+	collection(mux, "GET", "/api/object-types", h.ListObjectTypes)
+	collection(mux, "POST", "/api/object-types", h.RequireAuth(h.CreateObjectType))
+	mux.HandleFunc("GET /api/object-types/{id}", h.GetObjectType)
+	mux.HandleFunc("PUT /api/object-types/{id}", h.RequireAuth(h.UpdateObjectType))
+	mux.HandleFunc("PATCH /api/object-types/{id}/status", h.RequireAuth(h.UpdateObjectTypeStatus))
+	mux.HandleFunc("DELETE /api/object-types/{id}", h.RequireAuth(h.DeleteObjectType))
+
+	// ---- Преимущества ----
+	collection(mux, "GET", "/api/advantages", h.ListAdvantages)
+	collection(mux, "POST", "/api/advantages", h.RequireAuth(h.CreateAdvantage))
+	mux.HandleFunc("GET /api/advantages/{id}", h.GetAdvantage)
+	mux.HandleFunc("PUT /api/advantages/{id}", h.RequireAuth(h.UpdateAdvantage))
+	mux.HandleFunc("PATCH /api/advantages/{id}/status", h.RequireAuth(h.UpdateAdvantageStatus))
+	mux.HandleFunc("DELETE /api/advantages/{id}", h.RequireAuth(h.DeleteAdvantage))
+
+	// ---- Медиа ----
+	mux.HandleFunc("POST /api/media/upload", h.RequireAuth(h.UploadMedia))
+	collection(mux, "GET", "/api/media", h.ListMedia)
+	mux.HandleFunc("DELETE /api/media/{id}", h.RequireAuth(h.DeleteMedia))
+	mux.HandleFunc("PATCH /api/media/{id}/main", h.RequireAuth(h.SetMainMedia))
+
+	// Понятный JSON вместо пустой стандартной страницы 404.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		utils.WriteError(w, http.StatusNotFound, "маршрут не найден: "+r.Method+" "+r.URL.Path)
 	})
 
-	r.Route("/api", func(r chi.Router) {
-		// ---- Авторизация ----
-		r.Route("/auth", func(r chi.Router) {
-			r.Post("/login", h.Login) // публичный - единственный способ получить токен
-			r.With(h.RequireAuth).Get("/me", h.Me)
-			r.With(h.RequireAuth).Post("/change-password", h.ChangePassword)
-		})
+	return Logger(Recoverer(CORS(mux)))
+}
 
-		// ---- Категории ---- (GET открыт всем, остальное - только с токеном)
-		r.Route("/categories", func(r chi.Router) {
-			r.Get("/", h.ListCategories)
-			r.With(h.RequireAuth).Post("/", h.CreateCategory)
-			r.Get("/{id}", h.GetCategory)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateCategory)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteCategory)
-		})
-
-		// ---- Подкатегории ----
-		r.Route("/subcategories", func(r chi.Router) {
-			r.Get("/", h.ListSubcategories)
-			r.With(h.RequireAuth).Post("/", h.CreateSubcategory)
-			r.Get("/{id}", h.GetSubcategory)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateSubcategory)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteSubcategory)
-		})
-
-		// ---- Товары ----
-		r.Route("/products", func(r chi.Router) {
-			r.Get("/", h.ListProducts)
-			r.With(h.RequireAuth).Post("/", h.CreateProduct)
-			r.Get("/{id}", h.GetProduct)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateProduct)
-			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateProductStatus)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteProduct)
-
-			r.Get("/{id}/characteristics", h.GetProductCharacteristics)
-			r.With(h.RequireAuth).Post("/{id}/characteristics", h.SetProductCharacteristic)
-			r.With(h.RequireAuth).Delete("/{id}/characteristics/{characteristicID}", h.DeleteProductCharacteristic)
-		})
-
-		// ---- Услуги ----
-		r.Route("/services", func(r chi.Router) {
-			r.Get("/", h.ListServices)
-			r.With(h.RequireAuth).Post("/", h.CreateService)
-			r.Get("/{id}", h.GetService)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateService)
-			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateServiceStatus)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteService)
-		})
-
-		// ---- Характеристики ----
-		r.Route("/characteristics", func(r chi.Router) {
-			r.Get("/", h.ListCharacteristics)
-			r.With(h.RequireAuth).Post("/", h.CreateCharacteristic)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateCharacteristic)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteCharacteristic)
-
-			r.Get("/{id}/values", h.ListCharacteristicValues)
-			r.With(h.RequireAuth).Post("/{id}/values", h.CreateCharacteristicValue)
-			r.With(h.RequireAuth).Put("/{id}/values/{valueID}", h.UpdateCharacteristicValue)
-			r.With(h.RequireAuth).Delete("/{id}/values/{valueID}", h.DeleteCharacteristicValue)
-		})
-
-		// ---- Объекты (типы объектов, "Учебные заведения" и т.д.) ----
-		r.Route("/object-types", func(r chi.Router) {
-			r.Get("/", h.ListObjectTypes)
-			r.With(h.RequireAuth).Post("/", h.CreateObjectType)
-			r.Get("/{id}", h.GetObjectType)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateObjectType)
-			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateObjectTypeStatus)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteObjectType)
-		})
-
-		// ---- Преимущества ("Что мы предлагаем") ----
-		r.Route("/advantages", func(r chi.Router) {
-			r.Get("/", h.ListAdvantages)
-			r.With(h.RequireAuth).Post("/", h.CreateAdvantage)
-			r.Get("/{id}", h.GetAdvantage)
-			r.With(h.RequireAuth).Put("/{id}", h.UpdateAdvantage)
-			r.With(h.RequireAuth).Patch("/{id}/status", h.UpdateAdvantageStatus)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteAdvantage)
-		})
-
-		// ---- Медиа ----
-		r.Route("/media", func(r chi.Router) {
-			r.With(h.RequireAuth).Post("/upload", h.UploadMedia)
-			r.Get("/", h.ListMedia)
-			r.With(h.RequireAuth).Delete("/{id}", h.DeleteMedia)
-			r.With(h.RequireAuth).Patch("/{id}/main", h.SetMainMedia)
-		})
-	})
-
-	return r
+// collection вешает обработчик и на /api/xxx, и на /api/xxx/ -
+// чтобы фронтенду было всё равно, ставить завершающий слэш или нет.
+func collection(mux *http.ServeMux, method, path string, handler http.HandlerFunc) {
+	mux.HandleFunc(method+" "+path, handler)
+	mux.HandleFunc(method+" "+path+"/{$}", handler)
 }

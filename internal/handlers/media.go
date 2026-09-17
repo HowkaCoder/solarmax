@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,39 +13,27 @@ import (
 	"strings"
 
 	"solarmax/internal/models"
+	"solarmax/internal/store"
 	"solarmax/internal/utils"
-
-	"github.com/google/uuid"
 )
 
-var allowedEntityTypes = map[string]bool{
-	"category":    true,
-	"subcategory": true,
-	"product":     true,
-	"service":     true,
-	"object_type": true,
-	"advantage":   true,
-}
+const maxUploadSize = 25 << 20 // 25 МБ
 
-const maxUploadSize = 25 << 20
-
+// POST /api/media/upload  (multipart/form-data: entity_type, entity_id, is_main, files[])
 func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "не удалось разобрать форму (файл слишком большой?)")
 		return
 	}
 
 	entityType := r.FormValue("entity_type")
-	entityIDStr := r.FormValue("entity_id")
 	isMain := r.FormValue("is_main") == "true"
 
-	if !allowedEntityTypes[entityType] {
+	if !store.IsKnownEntityType(entityType) {
 		utils.WriteError(w, http.StatusBadRequest, "entity_type должен быть одним из: category, subcategory, product, service, object_type, advantage")
 		return
 	}
-	entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
+	entityID, err := strconv.ParseInt(r.FormValue("entity_id"), 10, 64)
 	if err != nil || entityID <= 0 {
 		utils.WriteError(w, http.StatusBadRequest, "некорректный entity_id")
 		return
@@ -55,7 +46,7 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	destDir := filepath.Join(h.Cfg.MediaDir, entityType, strconv.FormatInt(entityID, 10))
-	if err := os.MkdirAll(destDir, 0755); err != nil {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "не удалось создать директорию для файлов")
 		return
 	}
@@ -74,7 +65,7 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		fileName := uuid.NewString() + ext
+		fileName := randomName() + ext
 		dstPath := filepath.Join(destDir, fileName)
 		dst, err := os.Create(dstPath)
 		if err != nil {
@@ -91,41 +82,19 @@ func (h *Handler) UploadMedia(w http.ResponseWriter, r *http.Request) {
 		}
 
 		publicURL := fmt.Sprintf("/media/%s/%d/%s", entityType, entityID, fileName)
-		main := isMain && i == 0
-
-		var m models.Media
-		err = h.Pool.QueryRow(ctx, `
-			INSERT INTO media (entity_type, entity_id, url, is_main, sort_order)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id, entity_type, entity_id, url, is_main, sort_order, created_at`,
-			entityType, entityID, publicURL, main, i).
-			Scan(&m.ID, &m.EntityType, &m.EntityID, &m.URL, &m.IsMain, &m.SortOrder, &m.CreatedAt)
+		m, err := h.Store.AddMedia(entityType, entityID, publicURL, isMain && i == 0, i)
 		if err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+			writeStoreErr(w, err)
 			return
 		}
-
-		if main {
-			_, _ = h.Pool.Exec(ctx, `UPDATE media SET is_main=false WHERE entity_type=$1 AND entity_id=$2 AND id<>$3`,
-				entityType, entityID, m.ID)
-		}
-
 		saved = append(saved, m)
 	}
 
 	utils.WriteJSON(w, http.StatusCreated, saved)
 }
 
-func isAllowedImageExt(ext string) bool {
-	switch ext {
-	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
-		return true
-	}
-	return false
-}
-
+// GET /api/media?entity_type=product&entity_id=1
 func (h *Handler) ListMedia(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	entityType := r.URL.Query().Get("entity_type")
 	entityIDStr := r.URL.Query().Get("entity_id")
 	if entityType == "" || entityIDStr == "" {
@@ -137,34 +106,23 @@ func (h *Handler) ListMedia(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "некорректный entity_id")
 		return
 	}
-	list, err := h.getMedia(ctx, entityType, entityID)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if list == nil {
-		list = []models.Media{}
-	}
-	utils.WriteJSON(w, http.StatusOK, list)
+	utils.WriteJSON(w, http.StatusOK, h.Store.ListMedia(entityType, entityID))
 }
 
 func (h *Handler) DeleteMedia(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	id, err := idParam(r, "id")
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "некорректный id")
 		return
 	}
 
-	var relURL string
-	err = h.Pool.QueryRow(ctx, `DELETE FROM media WHERE id=$1 RETURNING url`, id).Scan(&relURL)
+	relURL, err := h.Store.DeleteMedia(id)
 	if err != nil {
-		utils.WriteError(w, http.StatusNotFound, "медиафайл не найден")
+		writeStoreErr(w, err)
 		return
 	}
-
 	if strings.HasPrefix(relURL, "/media/") {
-		diskPath := filepath.Join(h.Cfg.MediaDir, strings.TrimPrefix(relURL, "/media/"))
+		diskPath := filepath.Join(h.Cfg.MediaDir, filepath.Clean("/"+strings.TrimPrefix(relURL, "/media/")))
 		_ = os.Remove(diskPath)
 	}
 
@@ -172,32 +130,40 @@ func (h *Handler) DeleteMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SetMainMedia(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	id, err := idParam(r, "id")
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "некорректный id")
 		return
 	}
-
-	var entityType string
-	var entityID int64
-	err = h.Pool.QueryRow(ctx, `SELECT entity_type, entity_id FROM media WHERE id=$1`, id).Scan(&entityType, &entityID)
+	list, err := h.Store.SetMainMedia(id)
 	if err != nil {
-		utils.WriteError(w, http.StatusNotFound, "медиафайл не найден")
+		writeStoreErr(w, err)
 		return
 	}
-
-	_, err = h.Pool.Exec(ctx, `UPDATE media SET is_main=false WHERE entity_type=$1 AND entity_id=$2`, entityType, entityID)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_, err = h.Pool.Exec(ctx, `UPDATE media SET is_main=true WHERE id=$1`, id)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	list, _ := h.getMedia(ctx, entityType, entityID)
 	utils.WriteJSON(w, http.StatusOK, list)
+}
+
+// removeEntityFiles подчищает папку с картинками удалённой сущности.
+func (h *Handler) removeEntityFiles(entityType string, entityID int64) {
+	dir := filepath.Join(h.Cfg.MediaDir, entityType, strconv.FormatInt(entityID, 10))
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("не удалось удалить папку %s: %v", dir, err)
+	}
+}
+
+func isAllowedImageExt(ext string) bool {
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+		return true
+	}
+	return false
+}
+
+// randomName генерирует случайное имя файла (раньше это делал uuid).
+func randomName() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.FormatInt(int64(os.Getpid()), 16)
+	}
+	return hex.EncodeToString(b)
 }

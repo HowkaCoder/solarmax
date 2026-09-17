@@ -1,49 +1,104 @@
 package authutil
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
-	"fmt"
+	"strings"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
-// Claims - то, что зашито внутри JWT. Хранит только имя пользователя,
-// т.к. проект простой и ролей/прав пока нет - есть только один тип аккаунта (админ).
+// JWT (HS256) собран на стандартной библиотеке: формат токена и подпись
+// полностью совместимы с прежней реализацией на github.com/golang-jwt/jwt,
+// поэтому фронтенду ничего менять не нужно.
+
 type Claims struct {
-	Username string `json:"username"`
-	jwt.RegisteredClaims
+	Username  string `json:"username"`
+	ExpiresAt int64  `json:"exp"`
+	IssuedAt  int64  `json:"iat"`
 }
 
-// GenerateToken создаёт подписанный JWT (HS256) с заданным временем жизни.
+var (
+	ErrInvalidToken = errors.New("токен невалиден")
+	ErrTokenExpired = errors.New("срок действия токена истёк")
+)
+
+type jwtHeader struct {
+	Alg string `json:"alg"`
+	Typ string `json:"typ"`
+}
+
+// GenerateToken создаёт подписанный токен с заданным временем жизни.
 func GenerateToken(secret, username string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
-	expiresAt = time.Now().Add(ttl)
-	claims := Claims{
-		Username: username,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	token, err = t.SignedString([]byte(secret))
-	return token, expiresAt, err
-}
+	now := time.Now()
+	expiresAt = now.Add(ttl)
 
-// ParseToken проверяет подпись и срок годности токена, возвращает claims.
-func ParseToken(secret, tokenStr string) (*Claims, error) {
-	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("неожиданный метод подписи токена: %v", t.Header["alg"])
-		}
-		return []byte(secret), nil
+	headerJSON, err := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	claimsJSON, err := json.Marshal(Claims{
+		Username:  username,
+		ExpiresAt: expiresAt.Unix(),
+		IssuedAt:  now.Unix(),
 	})
 	if err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
-	if !token.Valid {
-		return nil, errors.New("токен невалиден")
+
+	unsigned := b64(headerJSON) + "." + b64(claimsJSON)
+	return unsigned + "." + b64(sign(secret, unsigned)), expiresAt, nil
+}
+
+// ParseToken проверяет подпись и срок годности, возвращает полезную нагрузку.
+func ParseToken(secret, tokenStr string) (*Claims, error) {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return nil, ErrInvalidToken
 	}
-	return claims, nil
+
+	var header jwtHeader
+	headerJSON, err := unb64(parts[0])
+	if err != nil || json.Unmarshal(headerJSON, &header) != nil || header.Alg != "HS256" {
+		return nil, ErrInvalidToken
+	}
+
+	unsigned := parts[0] + "." + parts[1]
+	gotSig, err := unb64(parts[2])
+	if err != nil || !hmac.Equal(gotSig, sign(secret, unsigned)) {
+		return nil, ErrInvalidToken
+	}
+
+	claimsJSON, err := unb64(parts[1])
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+	var claims Claims
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
+		return nil, ErrInvalidToken
+	}
+	if claims.Username == "" {
+		return nil, ErrInvalidToken
+	}
+	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
+		return nil, ErrTokenExpired
+	}
+
+	return &claims, nil
+}
+
+func sign(secret, payload string) []byte {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	return mac.Sum(nil)
+}
+
+func b64(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func unb64(s string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(s)
 }

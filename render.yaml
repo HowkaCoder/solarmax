@@ -1,0 +1,25 @@
+# Готовый конфиг для Render. Блока с базой данных больше нет.
+services:
+  - type: web
+    name: solarmax-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false        # задайте вручную в панели Render
+      - key: KEEPALIVE_ENABLED
+        value: "true"
+      - key: KEEPALIVE_INTERVAL
+        value: 1h
+    # На free-плане постоянного диска нет: данные переживают перезапуск
+    # процесса, но не передеплой. Делайте бэкап через /api/admin/backup.
+    # На платном плане раскомментируйте:
+    # disk:
+    #   name: solarmax-data
+    #   mountPath: /app/data
+    #   sizeGB: 1

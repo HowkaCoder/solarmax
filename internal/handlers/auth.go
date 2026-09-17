@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -10,34 +9,31 @@ import (
 	"solarmax/internal/authutil"
 	"solarmax/internal/models"
 	"solarmax/internal/utils"
-
-	"github.com/jackc/pgx/v5"
 )
 
 type contextKey string
 
 const usernameContextKey contextKey = "username"
 
-// RequireAuth - middleware, защищающий изменяющие эндпоинты (POST/PUT/PATCH/DELETE).
+// RequireAuth защищает изменяющие эндпоинты.
 // Ожидает заголовок: Authorization: Bearer <jwt>
-func (h *Handler) RequireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			utils.WriteError(w, http.StatusUnauthorized, "нужен токен авторизации: заголовок Authorization: Bearer <token>")
 			return
 		}
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
-		claims, err := authutil.ParseToken(h.Cfg.JWTSecret, tokenStr)
+		claims, err := authutil.ParseToken(h.Cfg.JWTSecret, strings.TrimPrefix(authHeader, "Bearer "))
 		if err != nil {
 			utils.WriteError(w, http.StatusUnauthorized, "невалидный или просроченный токен")
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), usernameContextKey, claims.Username)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		next(w, r.WithContext(ctx))
+	}
 }
 
 func usernameFromContext(r *http.Request) string {
@@ -45,11 +41,10 @@ func usernameFromContext(r *http.Request) string {
 	return v
 }
 
-// POST /api/auth/login - публичный эндпоинт, единственный вход в систему.
+// POST /api/auth/login
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	var in models.LoginInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeBody(r, &in); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "некорректное тело запроса")
 		return
 	}
@@ -58,14 +53,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var hash string
-	err := h.Pool.QueryRow(ctx, `SELECT password_hash FROM admins WHERE username=$1`, in.Username).Scan(&hash)
-	if err == pgx.ErrNoRows || (err == nil && !authutil.CheckPassword(hash, in.Password)) {
+	hash, ok := h.Store.PasswordHash(in.Username)
+	if !ok || !authutil.CheckPassword(hash, in.Password) {
 		utils.WriteError(w, http.StatusUnauthorized, "неверный логин или пароль")
-		return
-	}
-	if err != nil && err != pgx.ErrNoRows {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -83,18 +73,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/auth/me - защищённый эндпоинт для проверки токена фронтом.
+// GET /api/auth/me
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, map[string]string{"username": usernameFromContext(r)})
 }
 
-// POST /api/auth/change-password - защищённый эндпоинт смены пароля текущего админа.
+// POST /api/auth/change-password
 func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	username := usernameFromContext(r)
 
 	var in models.ChangePasswordInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeBody(r, &in); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "некорректное тело запроса")
 		return
 	}
@@ -107,9 +96,9 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var hash string
-	if err := h.Pool.QueryRow(ctx, `SELECT password_hash FROM admins WHERE username=$1`, username).Scan(&hash); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	hash, ok := h.Store.PasswordHash(username)
+	if !ok {
+		utils.WriteError(w, http.StatusUnauthorized, "пользователь не найден")
 		return
 	}
 	if !authutil.CheckPassword(hash, in.OldPassword) {
@@ -122,9 +111,8 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "не удалось захэшировать пароль")
 		return
 	}
-
-	if _, err := h.Pool.Exec(ctx, `UPDATE admins SET password_hash=$1 WHERE username=$2`, newHash, username); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	if err := h.Store.SetPasswordHash(username, newHash); err != nil {
+		writeStoreErr(w, err)
 		return
 	}
 

@@ -1,43 +1,28 @@
+# Postgres больше не нужен: хранилище встроено в приложение.
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: solarmax
-      POSTGRES_PASSWORD: solarmax
-      POSTGRES_DB: solarmax
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U solarmax"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   api:
     build: .
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_USER: solarmax
-      DB_PASSWORD: solarmax
-      DB_NAME: solarmax
-      MEDIA_DIR: /app/media
       PORT: 8080
+      DATA_DIR: /app/data
+
       # ОБЯЗАТЕЛЬНО смените на свой длинный случайный секрет в проде!
       JWT_SECRET: change-me-to-a-long-random-string
       JWT_EXPIRY_HOURS: "24"
+
+      # Логин/пароль администратора создаются только при первом запуске.
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin
+
+      # Антизасыпание на бесплатном хостинге.
+      KEEPALIVE_ENABLED: "true"
+      KEEPALIVE_INTERVAL: 1h
+      # KEEPALIVE_URL: https://ваш-домен/health
     ports:
       - "8080:8080"
     volumes:
-      - media_data:/app/media
+      - app_data:/app/data
 
 volumes:
-  pgdata:
-  media_data:
+  app_data:

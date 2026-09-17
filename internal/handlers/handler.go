@@ -1,75 +1,114 @@
 package handlers
 
 import (
-	"context"
-	"errors"
+	"encoding/json"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"strconv"
+	"time"
 
 	"solarmax/internal/config"
-	"solarmax/internal/models"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"solarmax/internal/keepalive"
+	"solarmax/internal/store"
+	"solarmax/internal/utils"
 )
 
 type Handler struct {
-	Pool *pgxpool.Pool
-	Cfg  *config.Config
+	Store     *store.Store
+	Cfg       *config.Config
+	KeepAlive *keepalive.Pinger
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
-	}
-	return false
-}
+// ==================== ХЕЛПЕРЫ ====================
 
-func isFKViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23503"
-	}
-	return false
-}
-
-func nullable(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
+// idParam достаёт числовой параметр из пути (/api/categories/{id}).
 func idParam(r *http.Request, key string) (int64, error) {
-	v := chi.URLParam(r, key)
-	return strconv.ParseInt(v, 10, 64)
+	return strconv.ParseInt(r.PathValue(key), 10, 64)
 }
 
-func (h *Handler) getMedia(ctx context.Context, entityType string, entityID int64) ([]models.Media, error) {
-	rows, err := h.Pool.Query(ctx, `
-		SELECT id, entity_type, entity_id, url, is_main, sort_order, created_at
-		FROM media
-		WHERE entity_type=$1 AND entity_id=$2
-		ORDER BY is_main DESC, sort_order ASC, id ASC`, entityType, entityID)
+// queryInt читает числовой query-параметр, пустой или кривой даёт 0.
+func queryInt(r *http.Request, key string) int64 {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return nil, err
+		return 0
 	}
-	defer rows.Close()
-
-	var list []models.Media
-	for rows.Next() {
-		var m models.Media
-		if err := rows.Scan(&m.ID, &m.EntityType, &m.EntityID, &m.URL, &m.IsMain, &m.SortOrder, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		list = append(list, m)
-	}
-	return list, rows.Err()
+	return n
 }
 
-func (h *Handler) deleteMediaForEntity(ctx context.Context, entityType string, entityID int64) error {
-	_, err := h.Pool.Exec(ctx, `DELETE FROM media WHERE entity_type=$1 AND entity_id=$2`, entityType, entityID)
-	return err
+// decodeBody разбирает JSON-тело запроса.
+func decodeBody(r *http.Request, dest interface{}) error {
+	return json.NewDecoder(r.Body).Decode(dest)
+}
+
+// writeStoreErr переводит ошибку хранилища в HTTP-ответ.
+// Прежние коды ответов (400/404/409) сохранены один в один.
+func writeStoreErr(w http.ResponseWriter, err error) {
+	utils.WriteError(w, store.HTTPStatus(err), err.Error())
+}
+
+// ==================== MIDDLEWARE ====================
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Logger пишет в лог метод, путь, код ответа и длительность.
+func Logger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		if sw.status == 0 {
+			sw.status = http.StatusOK
+		}
+		log.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(started).Round(time.Millisecond))
+	})
+}
+
+// Recoverer не даёт панике в одном запросе уронить весь сервер.
+func Recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("паника при обработке %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				utils.WriteError(w, http.StatusInternalServerError, "внутренняя ошибка сервера")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CORS разрешает запросы с любого домена (фронтенд живёт отдельно)
+// и сам отвечает на preflight-запросы OPTIONS.
+func CORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "300")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

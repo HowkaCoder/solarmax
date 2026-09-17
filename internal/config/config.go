@@ -1,59 +1,94 @@
 package config
 
 import (
-	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 )
 
+// Config - все настройки приложения. Внешняя БД больше не нужна:
+// данные лежат внутри процесса и сохраняются в один JSON-файл.
 type Config struct {
-	DatabaseURL string // если задан DATABASE_URL целиком (так отдаёт Render Postgres) - используем его как есть
-	DBHost      string
-	DBPort      string
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	DBSSLMode   string
-	MediaDir    string
-	Port        string
+	Port string
 
-	// JWT-авторизация
+	// Хранилище
+	DataDir  string // папка, где лежат данные и загруженные картинки
+	DataFile string // файл снапшота хранилища
+	MediaDir string // папка с загруженными файлами
+	Persist  bool   // писать ли снапшот на диск (false = чистый in-memory)
+
+	// Авторизация
 	JWTSecret      string
 	JWTExpiryHours int
+	AdminUsername  string // логин администратора, создаётся при первом запуске
+	AdminPassword  string // пароль администратора, создаётся при первом запуске
+
+	// Антизасыпание на бесплатном хостинге
+	KeepAliveEnabled  bool
+	KeepAliveInterval time.Duration
+	KeepAliveURLs     []string
 }
 
 func Load() *Config {
-	return &Config{
-		DatabaseURL: getEnv("DATABASE_URL", ""),
-		DBHost:      getEnv("DB_HOST", "localhost"),
-		DBPort:      getEnv("DB_PORT", "5432"),
-		DBUser:      getEnv("DB_USER", "solarmax"),
-		DBPassword:  getEnv("DB_PASSWORD", "solarmax"),
-		DBName:      getEnv("DB_NAME", "solarmax"),
-		// На Render/большинстве облачных Postgres нужен sslmode=require.
-		// Локально в docker-compose оставляем disable.
-		DBSSLMode: getEnv("DB_SSLMODE", "disable"),
-		MediaDir:  getEnv("MEDIA_DIR", "./media"),
-		// Render сам прокидывает переменную PORT и требует слушать именно её -
-		// это уже поддержано, ничего доп. делать не нужно.
+	dataDir := getEnv("DATA_DIR", "./data")
+
+	cfg := &Config{
+		// Render/Railway/Fly сами прокидывают PORT - слушаем именно его.
 		Port: getEnv("PORT", "8080"),
 
-		// ОБЯЗАТЕЛЬНО задайте свой JWT_SECRET на проде (Render -> Environment).
-		// Значение по умолчанию годится только для локальной разработки.
-		JWTSecret: getEnv("JWT_SECRET", "dev-only-change-me-in-production"),
-		// 24 часа - разумный баланс для простой админки без refresh-токенов:
-		// не слишком долго живущий токен, но и не заставляет логиниться каждый час.
+		DataDir:  dataDir,
+		DataFile: getEnv("DATA_FILE", filepath.Join(dataDir, "solarmax.json")),
+		MediaDir: getEnv("MEDIA_DIR", filepath.Join(dataDir, "media")),
+		Persist:  getEnvBool("PERSIST", true),
+
+		JWTSecret:      getEnv("JWT_SECRET", "dev-only-change-me-in-production"),
 		JWTExpiryHours: getEnvInt("JWT_EXPIRY_HOURS", 24),
+		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword:  getEnv("ADMIN_PASSWORD", "admin"),
+
+		KeepAliveEnabled:  getEnvBool("KEEPALIVE_ENABLED", true),
+		KeepAliveInterval: getEnvDuration("KEEPALIVE_INTERVAL", time.Hour),
 	}
+
+	cfg.KeepAliveURLs = resolveKeepAliveURLs(cfg.Port)
+	return cfg
 }
 
-func (c *Config) ConnString() string {
-	// Если платформа (например Render) сама даёт готовую строку подключения - используем её.
-	if c.DatabaseURL != "" {
-		return c.DatabaseURL
+// resolveKeepAliveURLs определяет, куда стучаться раз в час.
+// Приоритет: явный KEEPALIVE_URL -> публичный адрес от хостинга -> сам себя.
+func resolveKeepAliveURLs(port string) []string {
+	if raw := os.Getenv("KEEPALIVE_URL"); raw != "" {
+		var out []string
+		for _, u := range strings.Split(raw, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				out = append(out, u)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		c.DBUser, c.DBPassword, c.DBHost, c.DBPort, c.DBName, c.DBSSLMode)
+
+	// Render и Railway сами кладут публичный адрес в окружение.
+	for _, key := range []string{"PUBLIC_URL", "RENDER_EXTERNAL_URL", "RAILWAY_PUBLIC_DOMAIN", "FLY_APP_NAME"} {
+		v := os.Getenv(key)
+		if v == "" {
+			continue
+		}
+		switch key {
+		case "RAILWAY_PUBLIC_DOMAIN":
+			v = "https://" + v
+		case "FLY_APP_NAME":
+			v = "https://" + v + ".fly.dev"
+		}
+		return []string{strings.TrimRight(v, "/") + "/health"}
+	}
+
+	// Фоллбэк: пинг самого себя. Процесс точно не считается простаивающим,
+	// но внешний трафик это не заменяет (см. README).
+	return []string{"http://127.0.0.1:" + port + "/health"}
 }
 
 func getEnv(key, def string) string {
@@ -68,6 +103,33 @@ func getEnvInt(key string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return def
+}
+
+// getEnvDuration понимает и "60m"/"1h30m", и просто число минут ("60").
+func getEnvDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Minute
 	}
 	return def
 }
