@@ -43,10 +43,10 @@ func Load() *Config {
 		MediaDir: getEnv("MEDIA_DIR", filepath.Join(dataDir, "media")),
 		Persist:  getEnvBool("PERSIST", true),
 
-		JWTSecret:      getEnv("JWT_SECRET", "dev-only-change-me-in-production"),
+		JWTSecret:      os.Getenv("JWT_SECRET"),
 		JWTExpiryHours: getEnvInt("JWT_EXPIRY_HOURS", 24),
 		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
-		AdminPassword:  getEnv("ADMIN_PASSWORD", "admin"),
+		AdminPassword:  os.Getenv("ADMIN_PASSWORD"),
 
 		KeepAliveEnabled:  getEnvBool("KEEPALIVE_ENABLED", true),
 		KeepAliveInterval: getEnvDuration("KEEPALIVE_INTERVAL", time.Hour),
