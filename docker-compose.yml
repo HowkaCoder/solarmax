@@ -1,24 +1,10 @@
-# Postgres больше не нужен: хранилище встроено в приложение.
 services:
   api:
     build: .
     restart: unless-stopped
+    env_file: .env
     environment:
-      PORT: 8080
       DATA_DIR: /app/data
-
-      # ОБЯЗАТЕЛЬНО смените на свой длинный случайный секрет в проде!
-      JWT_SECRET: change-me-to-a-long-random-string
-      JWT_EXPIRY_HOURS: "24"
-
-      # Логин/пароль администратора создаются только при первом запуске.
-      ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: admin
-
-      # Антизасыпание на бесплатном хостинге.
-      KEEPALIVE_ENABLED: "true"
-      KEEPALIVE_INTERVAL: 1h
-      # KEEPALIVE_URL: https://ваш-домен/health
     ports:
       - "8080:8080"
     volumes:
