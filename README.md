@@ -1,187 +1,104 @@
 # SolarMax API
 
-Версия 5.0 — бэкенд на Go **без внешней базы данных и без внешних зависимостей**.
+Backend for a solar energy company website: catalog of panels, inverters and batteries, services, object types, advantages, product characteristics and media, with content in Russian, Uzbek and English and an admin panel API.
 
-Postgres убран: данные живут внутри процесса и сохраняются в один JSON-файл.
-В `go.mod` нет ни одной библиотеки — только стандартная библиотека Go.
-Итог: собирается без интернета, деплоится одним статическим бинарником,
-запускается на любом бесплатном хостинге без подключённой БД.
+Single static binary, no external database and no third-party dependencies, only the Go standard library.
 
-```bash
-go build ./cmd/api   # зависимостей нет, go mod download не нужен
-./api                # или: go run ./cmd/api
-```
+![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)
+![stdlib](https://img.shields.io/badge/dependencies-0-success)
+[![ci](https://github.com/HowkaCoder/solarmax/actions/workflows/ci.yml/badge.svg)](https://github.com/HowkaCoder/solarmax/actions/workflows/ci.yml)
 
-По умолчанию поднимается на `http://localhost:8080`, логин/пароль — `admin` / `admin`.
+## Why no database
 
----
+The catalog is small and changes a few times a week, while the site is hosted on free plans. So data lives in memory (maps under `sync.RWMutex`) and is saved to a single JSON file every 3 seconds when something changed. Writes are atomic (temp file + `rename`), and a final snapshot is taken on shutdown.
 
-## Как устроено хранилище
+Trade-off: everything has to fit in memory and only one instance can run. For this project it is fine; for a bigger catalog the `store` package can be replaced with a PostgreSQL implementation behind the same methods.
 
-Всё лежит в памяти (обычные `map` под `sync.RWMutex`) и раз в 3 секунды
-сбрасывается в `data/solarmax.json`. Запись атомарная: сначала временный файл,
-потом `rename`, поэтому битого файла на диске не окажется даже при падении.
-При старте файл читается обратно, при остановке (SIGTERM/Ctrl+C) делается
-финальный снапшот.
+## Features
 
-Загруженные картинки складываются в `data/media/` и раздаются по `/media/...`,
-как и раньше.
+- Categories → subcategories → products, services, object types, advantages
+- Characteristics with values, attached to products
+- Translations per language, list filters `?status=active|inactive` and `?language=ru|uz|en`
+- Image upload with main image and ordering
+- Admin auth: HS256 JWT and PBKDF2-SHA256 passwords on the standard library
+- Backup and restore of all data with one request
+- Keep-alive pinger for free hostings, health endpoint with uptime and counters
+- Graceful shutdown, panic recovery, request logging
 
-Если нужен режим совсем без диска — поставьте `PERSIST=false`,
-тогда данные будут жить только до перезапуска.
+Business rules: a category can't be deleted while it has subcategories, a subcategory while it has products (`409`); slugs are unique (`409`); products can be hidden without deleting.
 
-### Бэкап и восстановление
-
-На бесплатных тарифах диск обычно временный: при передеплое `data/` пропадает.
-Для этого есть два эндпоинта (оба под токеном):
+## Getting started
 
 ```bash
-# скачать всё одним файлом
-curl -H "Authorization: Bearer $TOKEN" \
-     https://ваш-домен/api/admin/backup -o backup.json
-
-# залить обратно (полностью заменяет текущие данные)
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-     --data-binary @backup.json https://ваш-домен/api/admin/restore
+cp .env.example .env
+go run ./cmd/api
 ```
 
-В дамп попадают все сущности и учётка администратора (с хэшем пароля),
-так что после восстановления вход работает тем же паролем.
-Картинки в дамп не входят — их храните отдельно или на постоянном диске.
+If `ADMIN_PASSWORD` is empty, a random password is generated on first start and printed to the log. If `JWT_SECRET` is empty, a random one is generated (tokens become invalid after restart), so set it in production.
 
----
+Docker:
 
-## Антизасыпание (раз в час)
-
-Бесплатные хостинги усыпляют сервис без активности. Внутри приложения работает
-фоновая горутина: первый пинг — через минуту после старта, дальше строго по
-интервалу (по умолчанию час). Адрес берётся из `KEEPALIVE_URL`, а если он не
-задан — автоматически из `RENDER_EXTERNAL_URL`, `PUBLIC_URL` или
-`RAILWAY_PUBLIC_DOMAIN`. В крайнем случае пингуется собственный `/health`.
-
-```
-GET  /api/keepalive        # когда был последний пинг и когда будет следующий
-POST /api/keepalive/ping   # запустить пинг вручную (нужен токен)
-```
-
-В логах это выглядит так:
-
-```
-keepalive: включён, интервал 1h0m0s, адреса: [https://solarmax-api.onrender.com/health]
-keepalive: пинг https://solarmax-api.onrender.com/health -> 200 (312 мс)
-```
-
-**Важно и честно:** самопинг не разбудит уже уснувший сервис — спящий процесс
-не может отправить запрос. На Render free обязательно добавьте внешний пингер
-(cron-job.org, UptimeRobot) на `https://ваш-домен/health` раз в 10–14 минут.
-Встроенный keepalive — это подстраховка для хостингов, которые смотрят на
-исходящую активность, плюс удобный «пульс» в логах.
-
----
-
-## Переменные окружения
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `PORT` | `8080` | Порт. Render/Railway прокидывают его сами. |
-| `DATA_DIR` | `./data` | Папка с данными и картинками. |
-| `DATA_FILE` | `DATA_DIR/solarmax.json` | Файл снапшота. |
-| `MEDIA_DIR` | `DATA_DIR/media` | Папка загруженных файлов. |
-| `PERSIST` | `true` | `false` — чистый in-memory, без записи на диск. |
-| `JWT_SECRET` | dev-значение | **Обязательно смените в проде.** |
-| `JWT_EXPIRY_HOURS` | `24` | Время жизни токена. |
-| `ADMIN_USERNAME` | `admin` | Создаётся только при первом запуске. |
-| `ADMIN_PASSWORD` | `admin` | Создаётся только при первом запуске. |
-| `KEEPALIVE_ENABLED` | `true` | Фоновые пинги. |
-| `KEEPALIVE_INTERVAL` | `1h` | `30m`, `1h30m` или просто число минут. |
-| `KEEPALIVE_URL` | автоопределение | Можно перечислить несколько через запятую. |
-
-Админ создаётся **только если в хранилище ещё нет ни одного пользователя**.
-Смена `ADMIN_PASSWORD` в окружении не меняет уже существующий пароль —
-для этого есть `POST /api/auth/change-password`.
-
----
-
-## API
-
-Пути, поля JSON и коды ответов не изменились — фронтенду менять нечего.
-
-### Авторизация
-```
-POST /api/auth/login             {"username","password"} -> {token, expires_at, username}
-GET  /api/auth/me                (Bearer)
-POST /api/auth/change-password   (Bearer) {"old_password","new_password"}
-```
-
-Все `GET` открыты всем, любые изменения требуют заголовок
-`Authorization: Bearer <token>`.
-
-### Сущности
-```
-/api/categories      GET, POST, GET/PUT/DELETE {id}
-/api/subcategories   GET, POST, GET/PUT/DELETE {id}          ?category_id=
-/api/products        GET, POST, GET/PUT/DELETE {id}          ?subcategory_id=
-                     PATCH {id}/status   {"status":"inactive"}
-                     GET/POST {id}/characteristics
-                     DELETE {id}/characteristics/{characteristicID}
-/api/services        GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
-/api/object-types    GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
-/api/advantages      GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
-/api/characteristics GET, POST, PUT/DELETE {id}
-                     GET/POST {id}/values, PUT/DELETE {id}/values/{valueID}
-/api/media           POST /upload (multipart), GET ?entity_type=&entity_id=,
-                     DELETE {id}, PATCH {id}/main
-```
-
-Общие фильтры списков: `?status=active|inactive`, `?language=ru|en|uz`
-(отдаёт только записи, у которых есть перевод на этот язык).
-
-### Служебное
-```
-GET  /health          "ok" — для хостинга и внешних пингеров
-GET  /api/health      подробно: аптайм, счётчики записей, статус keepalive
-GET  /api/keepalive
-POST /api/keepalive/ping      (Bearer)
-GET  /api/admin/backup        (Bearer)
-POST /api/admin/restore       (Bearer)
-```
-
-### Правила, которые сохранены
-1. Категорию нельзя удалить, пока у неё есть подкатегории — `409`.
-2. Подкатегорию нельзя удалить, пока в ней есть товары — `409`.
-3. Товар можно скрыть, не удаляя: `PATCH /api/products/{id}/status`.
-4. Slug уникален внутри своей сущности, при конфликте — `409`.
-5. Удаление товара или характеристики каскадно чистит связи и картинки.
-
----
-
-## Деплой
-
-**Docker:**
 ```bash
 docker compose up --build
 ```
 
-**Render:** в репозитории есть `render.yaml`. Блока с базой данных в нём нет.
-Задайте `JWT_SECRET` и `ADMIN_PASSWORD`, `healthCheckPath` уже указан как
-`/health`. На платном плане подключите постоянный диск на `/app/data` —
-тогда данные и картинки переживут передеплой.
+Render: `render.yaml` is included, health check path is `/health`.
 
-**Без Docker:** соберите `CGO_ENABLED=0 go build -o solarmax ./cmd/api` и
-положите бинарник на сервер. Больше ничего ставить не нужно.
+## Configuration
 
----
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | HTTP port |
+| `DATA_DIR` | `./data` | Data and uploaded images |
+| `DATA_FILE` | `DATA_DIR/solarmax.json` | Snapshot file |
+| `MEDIA_DIR` | `DATA_DIR/media` | Uploaded files |
+| `PERSIST` | `true` | `false` keeps data only in memory |
+| `JWT_SECRET` | random | Set it in production |
+| `JWT_EXPIRY_HOURS` | `24` | Token lifetime |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin`, random | Used only on first start |
+| `KEEPALIVE_ENABLED`, `KEEPALIVE_INTERVAL`, `KEEPALIVE_URL` | `true`, `1h`, auto | Background pings |
 
-## Что изменилось по сравнению с версией 4.0
+## API
 
-| Было | Стало |
-|---|---|
-| Postgres + `pgx` + SQL-миграции | встроенное хранилище `internal/store` |
-| роутер `chi` | `http.ServeMux` из Go 1.22 |
-| `golang-jwt/jwt` | свой HS256 на `crypto/hmac` (формат токена тот же) |
-| `bcrypt` из `x/crypto` | PBKDF2-HMAC-SHA256 на stdlib |
-| `godotenv` | `internal/dotenv` |
-| `google/uuid` | имена файлов из `crypto/rand` |
+All `GET` requests are public, any change needs `Authorization: Bearer <token>`.
 
-Папка `migrations/` удалена — схема больше не нужна, структура данных описана
-Go-типами в `internal/models`.
+```
+POST /api/auth/login             {"username","password"} -> {token, expires_at, username}
+GET  /api/auth/me
+POST /api/auth/change-password   {"old_password","new_password"}
+
+/api/categories      GET, POST, GET/PUT/DELETE {id}
+/api/subcategories   GET, POST, GET/PUT/DELETE {id}          ?category_id=
+/api/products        GET, POST, GET/PUT/DELETE {id}          ?subcategory_id=
+                     PATCH {id}/status, GET/POST {id}/characteristics
+/api/services        GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
+/api/object-types    GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
+/api/advantages      GET, POST, GET/PUT/DELETE {id}, PATCH {id}/status
+/api/characteristics GET, POST, PUT/DELETE {id}, {id}/values
+/api/media           POST /upload, GET ?entity_type=&entity_id=, DELETE {id}, PATCH {id}/main
+
+GET  /health, /api/health, /api/keepalive
+GET  /api/admin/backup
+POST /api/admin/restore
+```
+
+## Project structure
+
+```
+cmd/api/              entrypoint
+internal/
+  store/              in-memory storage with JSON snapshots
+  handlers/           HTTP handlers and middleware on net/http
+  authutil/           JWT and password hashing
+  models/             data types
+  keepalive/          background pinger
+  config/, dotenv/    configuration
+```
+
+## Tests
+
+```bash
+go test -race ./...
+```
+
+Covers password hashing and tokens (including forged and expired ones), catalog rules, saving and loading snapshots, and HTTP tests for login and protected routes.
