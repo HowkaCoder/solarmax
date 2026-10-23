@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"log"
 	"net/http"
@@ -17,6 +19,14 @@ import (
 	"solarmax/internal/keepalive"
 	"solarmax/internal/store"
 )
+
+func randomString(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("crypto/rand: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)[:n]
+}
 
 func main() {
 	dotenv.Load() // не критично, если .env отсутствует
@@ -34,8 +44,16 @@ func main() {
 		log.Println("хранилище: только в памяти (PERSIST=false), данные исчезнут при перезапуске")
 	}
 
-	// ---- Администратор по умолчанию ----
-	hash, err := authutil.HashPassword(cfg.AdminPassword)
+	if cfg.JWTSecret == "" {
+		cfg.JWTSecret = randomString(32)
+		log.Println("JWT_SECRET не задан: сгенерирован случайный секрет, токены станут недействительны после перезапуска")
+	}
+
+	adminPassword := cfg.AdminPassword
+	if adminPassword == "" {
+		adminPassword = randomString(12)
+	}
+	hash, err := authutil.HashPassword(adminPassword)
 	if err != nil {
 		log.Fatalf("не удалось захэшировать пароль администратора: %v", err)
 	}
@@ -43,8 +61,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("не удалось создать администратора: %v", err)
 	}
-	if created {
-		log.Printf("создан администратор %q (смените пароль через /api/auth/change-password)", cfg.AdminUsername)
+	if created && cfg.AdminPassword == "" {
+		log.Printf("создан администратор %q с паролем %q, смените его через /api/auth/change-password", cfg.AdminUsername, adminPassword)
+	} else if created {
+		log.Printf("создан администратор %q", cfg.AdminUsername)
 	}
 
 	if err := os.MkdirAll(cfg.MediaDir, 0o755); err != nil {
